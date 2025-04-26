@@ -2,6 +2,7 @@ package export
 
 import (
 	"encoding/json"
+
 	"github.com/wagoodman/dive/dive/filetree"
 	diveImage "github.com/wagoodman/dive/dive/image"
 	"github.com/wagoodman/dive/internal/log"
@@ -19,6 +20,7 @@ type Layer struct {
 	SizeBytes uint64              `json:"sizeBytes"`
 	Command   string              `json:"command"`
 	FileList  []filetree.FileInfo `json:"fileList"`
+	FileTree  *FileNodeJSON       `json:"fileTree"`
 }
 
 type Image struct {
@@ -34,6 +36,38 @@ type FileReference struct {
 	Path       string `json:"file"`
 }
 
+type FileNodeJSON struct {
+	Size     int64                    `json:"size,omitempty"`
+	Name     string                   `json:"name,omitempty"`
+	Data     any                      `json:"data,omitempty"`
+	Children map[string]*FileNodeJSON `json:"children,omitempty"`
+	Path     string                   `json:"path,omitempty"`
+}
+
+func ConvertToJSON(node *filetree.FileNode) *FileNodeJSON {
+	if node == nil {
+		return nil
+	}
+
+	// Create an ASTNodeJSON with basic fields
+	jsonNode := &FileNodeJSON{
+		Size:     node.Size,
+		Name:     node.Name,
+		Data:     node.Data,
+		Path:     node.Path(),
+		Children: make(map[string]*FileNodeJSON),
+	}
+
+	// Recursively convert children and the next node
+	for key, value := range node.Children {
+		if value.Data.DiffType != filetree.Unmodified {
+			jsonNode.Children[key] = ConvertToJSON(value)
+		}
+	}
+
+	return jsonNode
+}
+
 // NewExport exports the analysis to a JSON
 func NewExport(analysis *diveImage.Analysis) *Export {
 	data := Export{
@@ -46,8 +80,19 @@ func NewExport(analysis *diveImage.Analysis) *Export {
 		},
 	}
 
+	// Compare trees
+	treeStack := filetree.NewComparer(analysis.RefTrees)
+	treeStack.BuildCache()
+	bottomStart := 0
+	bottomStop := 0
 	// export layers in order
 	for idx, curLayer := range analysis.Layers {
+		if idx != 0 {
+			bottomStop = idx - 1
+		}
+		tree, _ := treeStack.GetTree(filetree.NewTreeIndexKey(bottomStart, bottomStop, idx, idx))
+		jsonTree := ConvertToJSON(tree.Root)
+
 		layerFileList := make([]filetree.FileInfo, 0)
 		visitor := func(node *filetree.FileNode) error {
 			layerFileList = append(layerFileList, node.Data.FileInfo)
@@ -64,6 +109,7 @@ func NewExport(analysis *diveImage.Analysis) *Export {
 			SizeBytes: curLayer.Size,
 			Command:   curLayer.Command,
 			FileList:  layerFileList,
+			FileTree:  jsonTree,
 		}
 	}
 
